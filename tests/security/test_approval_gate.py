@@ -148,6 +148,21 @@ class TestPermissionKeys:
         risk = assess_tool_call("http_request", {"url": "https://api.example.com/x"})
         assert risk.permission_key == "http_request:host:api.example.com"
 
+    @pytest.mark.parametrize(
+        "tool", ["http_request", "browser_open", "browser_navigate"]
+    )
+    def test_url_tools_are_scoped_to_host(self, tool: str) -> None:
+        """One remembered yes must not open every future URL.
+
+        browser_open reaches the user's real browser with their real
+        session, so an unscoped always-allow would let an injected page
+        have the agent open anything.
+        """
+        a = assess_tool_call(tool, {"url": "https://youtube.com/watch"})
+        b = assess_tool_call(tool, {"url": "https://evil.example/steal"})
+        assert a.permission_key == f"{tool}:host:youtube.com"
+        assert a.permission_key != b.permission_key
+
     def test_unscopable_tool_falls_back_to_its_name(self) -> None:
         assert assess_tool_call("think", {}).permission_key == "think"
 

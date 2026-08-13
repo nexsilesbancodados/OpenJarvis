@@ -35,6 +35,10 @@ class SecurityEventType(str, Enum):
     PII_DETECTED = "pii_detected"
     SENSITIVE_FILE_BLOCKED = "sensitive_file_blocked"
     TOOL_BLOCKED = "tool_blocked"
+    # A consequential tool actually ran. Trivial and low-risk calls are not
+    # recorded: an audit trail nobody can read is not an audit trail, and
+    # every think() and calculator() call would bury the entries that matter.
+    TOOL_INVOKED = "tool_invoked"
 
 
 # ---------------------------------------------------------------------------

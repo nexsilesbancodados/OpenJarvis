@@ -203,11 +203,15 @@ def _key_for(tool_name: str, params: Mapping[str, Any]) -> str:
         channel = params.get("channel") or params.get("channel_type") or "unknown"
         recipient = params.get("conversation_id") or params.get("to") or "any"
         return f"channel_send:{channel}:{recipient}"
-    if tool_name == "http_request":
+    if tool_name in ("http_request", "browser_open", "browser_navigate"):
+        # Scope to the host. Without this, one "always allow" on a URL the
+        # user recognised would grant every future URL — and for browser_open
+        # that means an injected page could have the agent open anything in
+        # the user's real browser, with their real session.
         url = str(params.get("url") or "")
         host = url.split("//", 1)[-1].split("/", 1)[0] if "//" in url else url
         if host:
-            return f"http_request:host:{host}"
+            return f"{tool_name}:host:{host}"
     return tool_name
 
 

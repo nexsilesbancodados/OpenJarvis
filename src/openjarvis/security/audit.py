@@ -6,7 +6,7 @@ import hashlib
 import json
 import sqlite3
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from openjarvis.core.config import DEFAULT_CONFIG_DIR
 from openjarvis.core.events import Event, EventBus, EventType
@@ -61,6 +61,13 @@ class AuditLogger:
             bus.subscribe(EventType.SECURITY_SCAN, self._on_event)
             bus.subscribe(EventType.SECURITY_ALERT, self._on_event)
             bus.subscribe(EventType.SECURITY_BLOCK, self._on_event)
+            # Tool activity. Previously the log covered only content scans, so
+            # an agent running a command, being refused by the approval gate,
+            # or being denied a capability left no trace at all — which is the
+            # half of "auditable actions" that actually matters.
+            bus.subscribe(EventType.TOOL_CALL_BLOCKED, self._on_event)
+            bus.subscribe(EventType.CAPABILITY_DENIED, self._on_event)
+            bus.subscribe(EventType.TOOL_CALL_END, self._on_event)
 
     def _migrate_schema(self) -> None:
         """Add row_hash/prev_hash columns if missing (schema migration)."""
@@ -231,13 +238,24 @@ class AuditLogger:
     def _on_event(self, event: Event) -> None:
         """Handle an event from the EventBus and log it."""
         data = event.data
-        # Map EventType to SecurityEventType
+        # Map EventType to SecurityEventType. The three scan events genuinely
+        # share a category; the tool events do not, and collapsing them would
+        # make the log unreadable for the question it exists to answer —
+        # "what did the assistant actually do".
         mapping = {
             EventType.SECURITY_SCAN: SecurityEventType.SECRET_DETECTED,
             EventType.SECURITY_ALERT: SecurityEventType.SECRET_DETECTED,
             EventType.SECURITY_BLOCK: SecurityEventType.SECRET_DETECTED,
+            EventType.TOOL_CALL_BLOCKED: SecurityEventType.TOOL_BLOCKED,
+            EventType.CAPABILITY_DENIED: SecurityEventType.TOOL_BLOCKED,
+            EventType.TOOL_CALL_END: SecurityEventType.TOOL_INVOKED,
         }
         event_type = mapping.get(event.event_type, SecurityEventType.SECRET_DETECTED)
+
+        if event_type is SecurityEventType.TOOL_INVOKED and not self._is_auditable(
+            data
+        ):
+            return
 
         # Extract findings from event data if present
         findings: List[ScanFinding] = []
@@ -253,14 +271,62 @@ class AuditLogger:
                 )
             )
 
+        preview = data.get("content_preview", "")
+        action = data.get("mode", "")
+        if event_type in (
+            SecurityEventType.TOOL_INVOKED,
+            SecurityEventType.TOOL_BLOCKED,
+        ):
+            # Record what ran and how it ended, never the arguments: they are
+            # the most likely place for a secret or personal data to sit, and
+            # this table is deliberately append-only and hash-chained.
+            tool = data.get("tool") or data.get("tool_name") or "unknown"
+            preview = preview or f"{tool} (agent={data.get('agent_id', '') or '-'})"
+            if not action:
+                if event_type is SecurityEventType.TOOL_BLOCKED:
+                    action = "queued" if data.get("queued") else "denied"
+                else:
+                    action = "ok" if data.get("success", True) else "failed"
+
         sec_event = SecurityEvent(
             event_type=event_type,
             timestamp=event.timestamp,
             findings=findings,
-            content_preview=data.get("content_preview", ""),
-            action_taken=data.get("mode", ""),
+            content_preview=preview,
+            action_taken=action,
         )
         self.log(sec_event)
+
+    def _is_auditable(self, data: Dict[str, Any]) -> bool:
+        """True when a completed tool call is consequential enough to record.
+
+        Trivial and low-tier calls — reading a file, searching, writing to the
+        assistant's own memory — happen constantly. Logging them all would
+        bury the entries an auditor is looking for and grow the hash chain
+        without adding information.
+        """
+        tool = data.get("tool") or data.get("tool_name")
+        if not tool:
+            return False
+        try:
+            from openjarvis.security.tool_risk import (
+                DEFAULT_TIERS,
+                assess_tool_call,
+            )
+            from openjarvis.tools.approval_store import TIER_HIGH, TIER_MEDIUM
+
+            name = str(tool)
+            # A tool absent from the table is recorded, not dropped. Here we
+            # only have the event payload — no ToolSpec — so the classifier
+            # would fall back to "trivial" for anything unrecognised, and a
+            # newly added tool would silently escape the trail. A gap is worse
+            # than a redundant row.
+            if name not in DEFAULT_TIERS:
+                return True
+            tier = assess_tool_call(name, data.get("arguments") or {}).tier
+            return tier in (TIER_MEDIUM, TIER_HIGH)
+        except Exception:  # pragma: no cover - never break a tool call
+            return True
 
 
 __all__ = ["AuditLogger"]
