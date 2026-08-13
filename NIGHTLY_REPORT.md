@@ -246,7 +246,23 @@ to everyone.
   the plan already specifies, keeping a local backend as the alternative.
 - **No deploy target exists.** There is no configured hosting, no deploy
   workflow bound to a branch, and no production environment for this fork —
-  so there was no deploy to run or validate. CI runs on push/PR only.
+  so there was no deploy to run or validate.
+
+- **GitHub Actions is disabled on the fork, and I did not enable it.**
+  `gh workflow list` returns nothing and no run has ever executed, which is
+  the default for forks. The PR is therefore open with no checks. Enabling
+  Actions is a one-click settings change and the repo is public, so there is
+  no billing cost — but it arms a chain worth seeing first:
+
+  `autotag.yml` fires on **push to main** and creates `v*` tags.
+  `pypi-publish.yml` fires on **`v*` tags** and publishes to PyPI.
+
+  So enabling Actions and then merging this PR to `main` would tag the fork
+  and attempt to publish it to PyPI under the upstream `OpenJarvis` package
+  name. That is public, external and not undoable, so it is not mine to
+  presume. Before switching Actions on, disable `autotag.yml` and
+  `pypi-publish.yml` on the fork — after that, `ci.yml`, `frontend.yml` and
+  `bash-tests.yml` are exactly the checks this PR wants.
 
 ---
 
@@ -263,6 +279,25 @@ to everyone.
 4. Turn on `CapabilityPolicy` with `default_deny=True`. It exists, is
    disabled by default, and is open-by-default when enabled.
 5. Then Phase 7 (desktop control) has the safety floor it requires.
+
+---
+
+## Git
+
+Branch `feat/voice-first-foundation`, 9 commits, pushed to `origin`.
+Pull request: https://github.com/nexsilesbancodados/OpenJarvis/pull/1 — open,
+mergeable, **no checks** (see the Actions blocker above).
+
+The push initially failed with a 403: the active `gh` account was
+`focussclin`, which has no write access. `nexsilesbancodados` was already
+authenticated, just not active; switching is local and reversible, so I did
+that rather than stopping.
+
+Nothing was committed to `main`, no history was rewritten, and no force push
+was used. The other agent's in-flight files — `routes.py`, `orchestrator.py`,
+`tool_resolver.py`, `cli/serve.py`, `tools/__init__.py`, `agents/_stubs.py`,
+`browser_open.py`, the two `scripts/*.ps1` — are untouched and still
+uncommitted in the working tree, along with the frontend rebuild.
 
 ---
 
