@@ -16,7 +16,7 @@ from openjarvis.tools.approval_store import (
 )
 
 try:
-    from fastapi import APIRouter, HTTPException
+    from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 except ImportError:
     raise ImportError("fastapi is required for approval routes")
 
@@ -75,14 +75,49 @@ def _remember(action: Any, *, approved: bool) -> bool:
     return True
 
 
-@router.post("/v1/approvals/{action_id}/approve")
-async def approve_action(action_id: str, always: bool = False) -> Dict[str, Any]:
-    """Approve one queued action, optionally remembering the decision.
+def _run_approved(action_id: str, app_state: Any) -> None:
+    """Execute an approved action off the request path.
 
-    ``?always=true`` stores an always-approve rule for the action's permission
-    key so the same kind of call stops asking. Until this existed the endpoint
-    could only flip a single action's status, which meant the learned
-    permission memory in the store was unreachable from the UI.
+    Tool calls can take minutes — shell_exec alone allows 300s — so holding
+    the HTTP response open until it finishes would time the UI out on exactly
+    the actions worth approving. The outcome is published on the event bus
+    instead.
+    """
+    from openjarvis.security.approval_executor import execute_approved_action
+
+    try:
+        execute_approved_action(
+            action_id,
+            store=_get_store(),
+            bus=getattr(app_state, "bus", None),
+            capability_policy=getattr(app_state, "capability_policy", None),
+            boundary_guard=getattr(app_state, "boundary_guard", None),
+            engine=getattr(app_state, "engine", None),
+            model=getattr(app_state, "model", "") or "",
+            memory_backend=getattr(app_state, "memory_backend", None),
+            channel_backend=getattr(app_state, "channel_backend", None),
+        )
+    except Exception:
+        logger.exception("approved action %s could not be executed", action_id)
+
+
+@router.post("/v1/approvals/{action_id}/approve")
+async def approve_action(
+    action_id: str,
+    request: Request,
+    background: BackgroundTasks,
+    always: bool = False,
+) -> Dict[str, Any]:
+    """Approve one queued action, remember the decision, and run it.
+
+    Approving used to only flip a status. The action then waited for the 5am
+    proactive sweep, so from the user's side pressing Approve did nothing —
+    worse than not offering the button. It now executes in the background and
+    reports the outcome on the event bus.
+
+    ``?always=true`` additionally stores an always-approve rule for the
+    action's permission key, which is how the learned permission memory the
+    store already implemented finally becomes reachable from the UI.
     """
     store = _get_store()
     action = store.get_action(action_id)
@@ -90,6 +125,7 @@ async def approve_action(action_id: str, always: bool = False) -> Dict[str, Any]
         raise HTTPException(status_code=404, detail="Action not found")
     store.update_status(action_id, STATUS_APPROVED)
     remembered = _remember(action, approved=True) if always else False
+    background.add_task(_run_approved, action_id, request.app.state)
     logger.info(
         "Action %s approved via UI (always=%s, remembered=%s)",
         action_id,
@@ -101,6 +137,7 @@ async def approve_action(action_id: str, always: bool = False) -> Dict[str, Any]
         "id": action_id,
         "remembered": remembered,
         "permission_key": action.permission_key,
+        "executing": True,
     }
 
 
