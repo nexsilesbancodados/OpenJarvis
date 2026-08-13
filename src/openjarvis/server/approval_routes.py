@@ -6,8 +6,11 @@ import logging
 from typing import Any, Dict, Optional
 
 from openjarvis.tools.approval_store import (
+    DECISION_ALWAYS_APPROVE,
+    DECISION_ALWAYS_DENY,
     STATUS_APPROVED,
     STATUS_DENIED,
+    TIER_HIGH,
     ApprovalStore,
     PendingAction,
 )
@@ -54,26 +57,74 @@ async def list_pending_approvals() -> Dict[str, Any]:
     return {"actions": [_serialize(a) for a in actions], "count": len(actions)}
 
 
+def _remember(action: Any, *, approved: bool) -> bool:
+    """Persist an always-approve/deny rule for this action's permission key.
+
+    ``high`` tier is excluded by design: the tier exists precisely because the
+    consequence is large enough to be worth asking every time, so letting the
+    UI store a standing yes for it would defeat the classification.
+    """
+    if action.tier == TIER_HIGH:
+        return False
+    _get_store().set_permission(
+        action.permission_key,
+        DECISION_ALWAYS_APPROVE if approved else DECISION_ALWAYS_DENY,
+        approved=approved,
+        notes=f"set from the approvals UI for {action.action_type}",
+    )
+    return True
+
+
 @router.post("/v1/approvals/{action_id}/approve")
-async def approve_action(action_id: str) -> Dict[str, Any]:
+async def approve_action(action_id: str, always: bool = False) -> Dict[str, Any]:
+    """Approve one queued action, optionally remembering the decision.
+
+    ``?always=true`` stores an always-approve rule for the action's permission
+    key so the same kind of call stops asking. Until this existed the endpoint
+    could only flip a single action's status, which meant the learned
+    permission memory in the store was unreachable from the UI.
+    """
     store = _get_store()
     action = store.get_action(action_id)
     if action is None:
         raise HTTPException(status_code=404, detail="Action not found")
     store.update_status(action_id, STATUS_APPROVED)
-    logger.info("Action %s approved via UI", action_id)
-    return {"status": "approved", "id": action_id}
+    remembered = _remember(action, approved=True) if always else False
+    logger.info(
+        "Action %s approved via UI (always=%s, remembered=%s)",
+        action_id,
+        always,
+        remembered,
+    )
+    return {
+        "status": "approved",
+        "id": action_id,
+        "remembered": remembered,
+        "permission_key": action.permission_key,
+    }
 
 
 @router.post("/v1/approvals/{action_id}/deny")
-async def deny_action(action_id: str) -> Dict[str, Any]:
+async def deny_action(action_id: str, always: bool = False) -> Dict[str, Any]:
+    """Deny one queued action, optionally remembering the decision."""
     store = _get_store()
     action = store.get_action(action_id)
     if action is None:
         raise HTTPException(status_code=404, detail="Action not found")
     store.update_status(action_id, STATUS_DENIED)
-    logger.info("Action %s denied via UI", action_id)
-    return {"status": "denied", "id": action_id}
+    remembered = _remember(action, approved=False) if always else False
+    logger.info(
+        "Action %s denied via UI (always=%s, remembered=%s)",
+        action_id,
+        always,
+        remembered,
+    )
+    return {
+        "status": "denied",
+        "id": action_id,
+        "remembered": remembered,
+        "permission_key": action.permission_key,
+    }
 
 
 __all__ = ["router"]

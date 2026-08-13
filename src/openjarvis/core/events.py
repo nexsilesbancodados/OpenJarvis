@@ -47,6 +47,9 @@ class EventType(str, Enum):
     LOOP_GUARD_TRIGGERED = "loop_guard_triggered"
     CAPABILITY_DENIED = "capability_denied"
     TAINT_VIOLATION = "taint_violation"
+    # Emitted when the approval gate refuses a tool call — either queued for a
+    # human decision or blocked by a remembered "always deny".
+    TOOL_CALL_BLOCKED = "tool_call_blocked"
     # Phase 15 — Workflow, Skills, Sessions
     WORKFLOW_START = "workflow_start"
     WORKFLOW_NODE_START = "workflow_node_start"
