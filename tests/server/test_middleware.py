@@ -22,6 +22,12 @@ class TestSecurityHeaders:
             "Content-Security-Policy",
         }
         assert set(SECURITY_HEADERS.keys()) == expected_keys
+        assert SECURITY_HEADERS["Permissions-Policy"] == (
+            "camera=(), microphone=(self), geolocation=()"
+        )
+        assert SECURITY_HEADERS["Content-Security-Policy"].endswith(
+            "media-src 'self' blob:; worker-src 'self' blob:"
+        )
 
     def test_create_middleware_without_starlette(self) -> None:
         """When starlette is not available, returns None."""
