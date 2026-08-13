@@ -49,7 +49,7 @@ restricted to the current user.
 | `b3bd7e3` | Tool arguments validated against the advertised JSON Schema |
 | `31ff79e` | Codex CLI adapter (`agents/codex.py`) |
 | `5dbe642` | External analytics made opt-in |
-| `0e8fdf5` | Server tool calls gated on the approval queue |
+| `d1dc004` | Server tool calls gated on the approval queue |
 
 ---
 
