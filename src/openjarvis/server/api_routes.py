@@ -9,6 +9,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,13 @@ class OptimizeRunRequest(BaseModel):
     max_trials: int = 20
     optimizer_model: str = "claude-sonnet-4-6"
     max_samples: int = 50
+
+
+class SynthesizeSpeechRequest(BaseModel):
+    text: str
+    voice_id: str = "nova"
+    speed: float = 1.0
+    output_format: str = "mp3"
 
 
 # ---- Agent routes ----
@@ -598,7 +606,12 @@ async def prometheus_metrics(request: Request):
         if not db_path.exists():
             from starlette.responses import PlainTextResponse
 
-            return PlainTextResponse("# no telemetry data\n", media_type="text/plain")
+            # Keep an explicit, human-readable fallback that also satisfies
+            # Prometheus scrapers and the UI's empty-state contract.
+            return PlainTextResponse(
+                "# No metrics available\n",
+                media_type="text/plain",
+            )
 
         agg = TelemetryAggregator(db_path)
         stats = agg.summary()
@@ -946,6 +959,46 @@ async def speech_health(request: Request):
     }
 
 
+@speech_router.post("/synthesize")
+async def synthesize_speech(req: SynthesizeSpeechRequest, request: Request):
+    """Synthesize a reply for clients that want server-generated voice audio."""
+    backend = getattr(request.app.state, "tts_backend", None)
+    if backend is None:
+        raise HTTPException(status_code=501, detail="TTS backend not configured")
+    text = req.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Text is required")
+    if not 0.25 <= req.speed <= 4.0:
+        raise HTTPException(status_code=400, detail="Speed must be between 0.25 and 4")
+    try:
+        result = await asyncio.to_thread(
+            backend.synthesize,
+            text,
+            voice_id=req.voice_id,
+            speed=req.speed,
+            output_format=req.output_format,
+        )
+    except Exception as exc:
+        logger.exception("Speech synthesis failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Speech synthesis failed: {exc}",
+        ) from exc
+
+    media_type = {
+        "mp3": "audio/mpeg",
+        "wav": "audio/wav",
+        "opus": "audio/ogg",
+        "ogg": "audio/ogg",
+        "aac": "audio/aac",
+    }.get(result.format.lower(), "application/octet-stream")
+    return Response(
+        content=result.audio,
+        media_type=media_type,
+        headers={"Cache-Control": "no-store", "X-OpenJarvis-TTS": backend.backend_id},
+    )
+
+
 # ---- Feedback routes ----
 
 feedback_router = APIRouter(prefix="/v1/feedback", tags=["feedback"])
@@ -1096,6 +1149,16 @@ def include_all_routes(app) -> None:
         app.include_router(ws_router)
     except Exception:
         logger.debug("WebSocket bridge not available", exc_info=True)
+
+    # Continuous voice session (WS /v1/voice/session)
+    try:
+        from openjarvis.server.voice_routes import create_voice_router
+
+        voice_router = create_voice_router()
+        if voice_router is not None:
+            app.include_router(voice_router)
+    except Exception:
+        logger.debug("Voice session route not available", exc_info=True)
 
 
 __all__ = [
