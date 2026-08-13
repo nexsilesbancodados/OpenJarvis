@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from openjarvis.core.events import EventBus, EventType
+from openjarvis.core.schema_validation import ValidationError, validate_arguments
 from openjarvis.core.types import ToolCall, ToolResult
 
 # ---------------------------------------------------------------------------
@@ -107,6 +108,7 @@ class ToolExecutor:
         capability_policy: Optional[Any] = None,
         agent_id: str = "",
         boundary_guard: Optional[Any] = None,
+        approval_gate: Optional[Any] = None,
     ) -> None:
         self._tools: Dict[str, BaseTool] = {t.spec.name: t for t in tools}
         self._bus = bus
@@ -116,6 +118,11 @@ class ToolExecutor:
         self._capability_policy = capability_policy
         self._agent_id = agent_id
         self._boundary_guard = boundary_guard
+        # When set, every non-trivial call is risk-assessed and either allowed,
+        # refused, or queued for a human — see security/approval_gate.py. Left
+        # None the executor behaves exactly as before, so callers that opt out
+        # (the CLI, which can prompt on a real TTY) are unaffected.
+        self._approval_gate = approval_gate
 
     def execute(self, tool_call: ToolCall) -> ToolResult:
         """Parse arguments, dispatch to tool, measure latency, emit events."""
@@ -134,6 +141,24 @@ class ToolExecutor:
             return ToolResult(
                 tool_name=tool_call.name,
                 content=f"Invalid arguments JSON: {exc}",
+                success=False,
+            )
+
+        # Validate against the schema the tool advertised to the model. Without
+        # this the schema was decorative: a missing key became an opaque
+        # TypeError from ``tool.execute(**params)``, which reads as a broken
+        # tool rather than a fixable mistake. Coerced values are used from here
+        # on, so a model sending "30" for an integer keeps working.
+        try:
+            params = validate_arguments(
+                tool.spec.parameters,
+                params,
+                tool_name=tool_call.name,
+            )
+        except ValidationError as exc:
+            return ToolResult(
+                tool_name=tool_call.name,
+                content=str(exc),
                 success=False,
             )
 
@@ -205,8 +230,33 @@ class ToolExecutor:
             if isinstance(params, dict):
                 params.pop("_taint", None)
 
-        # Confirmation check for sensitive tools
-        if tool.spec.requires_confirmation:
+        # Risk gate. Runs before the TTY-style confirmation below and covers
+        # every tool, not just those flagged requires_confirmation — the flag
+        # is set on only a handful of tools, while risk is a property of the
+        # call (`shell_exec rm -rf` and `shell_exec ls` are not the same act).
+        if self._approval_gate is not None:
+            decision = self._approval_gate.review(
+                tool_call.name,
+                params,
+                spec=tool.spec,
+                agent_id=self._agent_id,
+            )
+            if not decision.allowed:
+                return ToolResult(
+                    tool_name=tool_call.name,
+                    content=decision.message,
+                    success=False,
+                    metadata={
+                        "approval_required": True,
+                        "approval_action_id": decision.action_id,
+                        "risk_tier": decision.tier,
+                    },
+                )
+
+        # Confirmation check for sensitive tools. Skipped when a gate is
+        # installed: the gate is the authority then, and running both would
+        # refuse an already-approved call for want of a TTY callback.
+        if tool.spec.requires_confirmation and self._approval_gate is None:
             if not self._interactive or self._confirm_callback is None:
                 return ToolResult(
                     tool_name=tool_call.name,
