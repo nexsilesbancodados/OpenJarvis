@@ -1070,14 +1070,42 @@ class AnalyticsConfig:
 
     No chat content, prompts, model outputs, file paths, emails, IPs,
     or hardware identifiers are ever sent. See ``docs/telemetry.md``.
+
+    Defaults to **off**: this build adds session-awareness observers that
+    read window titles, terminal commands and repository state, so the
+    burden of proof sits with enabling collection, not with disabling it.
+    Turn it on via ``[analytics] enabled = true`` in ``config.toml`` or
+    ``OPENJARVIS_ANALYTICS=1``; ``DO_NOT_TRACK=1`` overrides both. The
+    gate lives in :func:`openjarvis.analytics.identity.is_analytics_enabled`.
     """
 
-    enabled: bool = True
+    enabled: bool = False
     host: str = "https://34.231.106.201.sslip.io"
     key: str = "phc_ysKu72QaxzYNmDpHFcesD2ZZAe68zkdWJEKoYYkc5e3n"
     anon_id_path: str = field(default_factory=lambda: str(get_config_dir() / "anon_id"))
     flush_interval_seconds: int = 30
     flush_at_size: int = 100
+
+
+@dataclass(slots=True)
+class ApprovalsConfig:
+    """Risk gating for tool calls the server runs on your behalf.
+
+    Server-side agents used to run every tool with a blanket auto-approve, so
+    the risk tiers in ``tools/approval_store.py`` protected nothing. With this
+    enabled, each call is classified (see ``security/tool_risk.py``) and
+    anything above ``auto_approve_tiers`` is queued for a human instead of
+    executed.
+
+    ``tier_overrides`` retiers individual tools without editing code, e.g.
+    ``tier_overrides = {web_search = "trivial"}``.
+    """
+
+    enabled: bool = True
+    # Only read-only, side-effect-free calls run unattended by default.
+    auto_approve_tiers: tuple = ("trivial",)
+    tier_overrides: dict = field(default_factory=dict)
+    ttl_hours: int = 24
 
 
 @dataclass(slots=True)
@@ -1603,6 +1631,7 @@ class JarvisConfig:
     telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
     analytics: AnalyticsConfig = field(default_factory=AnalyticsConfig)
     traces: TracesConfig = field(default_factory=TracesConfig)
+    approvals: ApprovalsConfig = field(default_factory=ApprovalsConfig)
     channel: ChannelConfig = field(default_factory=ChannelConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
@@ -1891,6 +1920,7 @@ def load_config(path: Optional[Path] = None) -> JarvisConfig:
             "telemetry",
             "analytics",
             "traces",
+            "approvals",
             "security",
             "channel",
             "tools",
@@ -2268,6 +2298,7 @@ __all__ = [
     "TelegramChannelConfig",
     "TelemetryConfig",
     "ToolsConfig",
+    "ApprovalsConfig",
     "TracesConfig",
     "VLLMEngineConfig",
     "WebChatChannelConfig",
