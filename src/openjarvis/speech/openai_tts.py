@@ -44,9 +44,23 @@ class OpenAITTSBackend(TTSBackend):
 
     backend_id = "openai_tts"
 
-    def __init__(self, *, api_key: str = "", model: str = "tts-1") -> None:
+    #: Time-to-first-byte dominates a spoken turn, and it is almost entirely
+    #: fixed cost: measured against this API, a 3-character phrase and a
+    #: 112-character one both take about two seconds on ``tts-1``. Switching
+    #: model is the single cheapest latency win available —
+    #:
+    #:     tts-1            first byte 2142 ms, complete 2661 ms
+    #:     gpt-4o-mini-tts  first byte  774 ms, complete 1440 ms
+    #:
+    #: so this build defaults to the faster one. Set ``OPENAI_TTS_MODEL`` to
+    #: pin ``tts-1``, ``tts-1-hd``, or anything newer.
+    DEFAULT_MODEL = "gpt-4o-mini-tts"
+
+    def __init__(self, *, api_key: str = "", model: str = "") -> None:
         self._api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
-        self._model = model
+        self._model = (
+            model or os.environ.get("OPENAI_TTS_MODEL", "") or self.DEFAULT_MODEL
+        )
 
     def synthesize(
         self,
