@@ -22,12 +22,15 @@ const Toaster = ({ ...props }: ToasterProps) => {
           <Loader2Icon className="size-4 animate-spin" />
         ),
       }}
+      // The nova tokens first, with the shadcn ones as fallback. The rebuilt
+      // index.css defines neither --popover nor --border, so referencing them
+      // alone rendered every toast with undefined colours.
       style={
         {
-          "--normal-bg": "var(--popover)",
-          "--normal-text": "var(--popover-foreground)",
-          "--normal-border": "var(--border)",
-          "--border-radius": "var(--radius)",
+          "--normal-bg": "var(--nova-panel-solid, var(--popover, #101420))",
+          "--normal-text": "var(--nova-text, var(--popover-foreground, #f5f7ff))",
+          "--normal-border": "var(--nova-border, var(--border, rgba(255,255,255,.14)))",
+          "--border-radius": "var(--radius, 12px)",
         } as React.CSSProperties
       }
       toastOptions={{

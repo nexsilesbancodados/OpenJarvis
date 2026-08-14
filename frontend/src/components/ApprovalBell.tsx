@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Bell, CheckCircle, ChevronDown, ChevronUp, Clock, XCircle } from 'lucide-react';
+import { toast } from 'sonner';
 import { approveAction, denyAction, fetchPendingApprovals } from '../lib/api';
 import type { PendingApproval } from '../lib/api';
+import { ALL_AGENTS, useAgentEvents } from '../lib/useAgentEvents';
+import type { AgentEvent } from '../lib/useAgentEvents';
+
+// A queued call and a finished one both change what the bell should show.
+const APPROVAL_EVENTS = ['tool_call_blocked', 'approval_executed'] as const;
 
 const TIER_STYLES: Record<string, { label: string; color: string; bg: string }> = {
   trivial: { label: 'Trivial', color: 'var(--color-text-secondary)', bg: 'color-mix(in srgb, var(--color-text-secondary) 10%, transparent)' },
@@ -35,10 +41,46 @@ export function ApprovalBell() {
     }
   }, []);
 
+  // Loaded once, then kept current by the event stream. The 10-second poll
+  // this replaces ran forever on a machine that is also running inference,
+  // and still left a gap: nothing told the UI how an approved action turned
+  // out, so the item just vanished.
   useEffect(() => {
     load();
-    const id = setInterval(load, 10000);
-    return () => clearInterval(id);
+  }, [load]);
+
+  useAgentEvents(
+    ALL_AGENTS,
+    useCallback(
+      (event: AgentEvent) => {
+        if (event.type === 'approval_executed') {
+          const ok = event.data?.success === true;
+          const what = String(event.data?.description || 'That action');
+          const detail = String(event.data?.message || '');
+          if (ok) toast.success(what, { description: detail.slice(0, 160) });
+          else toast.error(`${what} failed`, { description: detail.slice(0, 160) });
+        }
+        // Both a newly queued call and a finished one change the list.
+        void load();
+      },
+      [load],
+    ),
+    APPROVAL_EVENTS,
+  );
+
+  // A dropped socket would otherwise leave the bell frozen on a stale list.
+  // Refreshing when the tab regains focus is cheap and covers sleep/resume
+  // too, without reintroducing a timer.
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === 'visible') void load();
+    };
+    document.addEventListener('visibilitychange', refresh);
+    window.addEventListener('focus', refresh);
+    return () => {
+      document.removeEventListener('visibilitychange', refresh);
+      window.removeEventListener('focus', refresh);
+    };
   }, [load]);
 
   useEffect(() => {
