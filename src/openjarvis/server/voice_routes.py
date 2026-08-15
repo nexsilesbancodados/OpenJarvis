@@ -71,26 +71,174 @@ VOICE_SYSTEM_PROMPT = (
 )
 
 
+#: A spoken turn that needs a tool cannot wait forever for the model to stop
+#: calling them. Well past any real answer, short of hanging the conversation.
+MAX_TOOL_TURNS = 6
+
+
+def _build_voice_tools(app_state: Any) -> tuple[list, list, Any]:
+    """Resolve the tools a voice turn may use.
+
+    Returns ``(instances, openai_specs, executor)``. Voice runs the same tool
+    loop as the rest of the server, through the same approval gate — a request
+    spoken aloud must not be able to do more, or less, than the same request
+    typed.
+    """
+    from openjarvis.agents.tool_resolver import (
+        ensure_registries_populated,
+        instantiate_registered_tool,
+    )
+    from openjarvis.core.registry import ToolRegistry
+    from openjarvis.tools._stubs import ToolExecutor
+
+    config = getattr(app_state, "config", None)
+    enabled = getattr(getattr(config, "tools", None), "enabled", None) or []
+    if isinstance(enabled, str):
+        enabled = [name.strip() for name in enabled.split(",") if name.strip()]
+
+    ensure_registries_populated()
+    instances = []
+    for name in enabled:
+        if not ToolRegistry.contains(name):
+            logger.debug("voice: tool %r is enabled but not registered", name)
+            continue
+        try:
+            tool = instantiate_registered_tool(
+                ToolRegistry.get(name),
+                name,
+                engine=getattr(app_state, "engine", None),
+                model=getattr(app_state, "model", "") or "",
+                memory_backend=getattr(app_state, "memory_backend", None),
+                channel_backend=getattr(app_state, "channel_backend", None),
+            )
+        except Exception:
+            logger.exception("voice: could not build tool %r", name)
+            continue
+        if tool is not None:
+            instances.append(tool)
+
+    if not instances:
+        return [], [], None
+
+    gate = None
+    try:
+        from openjarvis.server.agent_manager_routes import _approval_gate_for
+
+        gate = _approval_gate_for(app_state, getattr(app_state, "bus", None))
+    except Exception:
+        logger.debug("voice: approval gate unavailable", exc_info=True)
+
+    executor = ToolExecutor(
+        instances,
+        bus=getattr(app_state, "bus", None),
+        interactive=True,
+        confirm_callback=lambda _prompt: True,
+        approval_gate=gate,
+        capability_policy=getattr(app_state, "capability_policy", None),
+        agent_id="voice",
+    )
+    return instances, [t.to_openai_function() for t in instances], executor
+
+
 def _make_answer(app_state: Any, model: str):
-    """Build the reply generator, streaming tokens from the configured engine."""
+    """Build the reply generator: a streaming tool loop, not a bare LLM call.
+
+    This used to call ``engine.stream()`` directly, which meant voice had no
+    tools at all — asked to open a browser or read a file, the model correctly
+    answered that it could not. Spoken requests now go through the same tool
+    loop as typed ones.
+    """
 
     async def answer(text: str) -> AsyncIterator[str]:
         engine = getattr(app_state, "engine", None)
         if engine is None:
-            yield ("No inference engine is configured, so I cannot answer yet.")
+            yield "No inference engine is configured, so I cannot answer yet."
             return
 
-        from openjarvis.core.types import Message, Role
+        from openjarvis.core.types import Message, Role, ToolCall
 
+        chosen = model or getattr(app_state, "model", "") or ""
+        instances, specs, executor = _build_voice_tools(app_state)
         messages = [
             Message(role=Role.SYSTEM, content=VOICE_SYSTEM_PROMPT),
             Message(role=Role.USER, content=text),
         ]
-        chosen = model or getattr(app_state, "model", "") or ""
-        async for token in engine.stream(messages, model=chosen):
-            yield token
+
+        if not specs or executor is None:
+            async for token in engine.stream(messages, model=chosen):
+                yield token
+            return
+
+        for _turn in range(MAX_TOOL_TURNS):
+            fragments: dict = {}
+            said = ""
+            finish = None
+
+            async for chunk in engine.stream_full(messages, model=chosen, tools=specs):
+                if chunk.content:
+                    said += chunk.content
+                    yield chunk.content
+                if chunk.tool_calls:
+                    _merge_fragments(fragments, chunk.tool_calls)
+                if chunk.finish_reason:
+                    finish = chunk.finish_reason
+
+            # messages_to_dicts serialises Message.tool_calls from ToolCall
+            # attributes, not from wire-shaped dicts, so the merged fragments
+            # have to become objects before they go back to the engine.
+            calls = []
+            for index in sorted(fragments):
+                fn = fragments[index].get("function", {})
+                calls.append(
+                    ToolCall(
+                        id=fragments[index].get("id", "") or f"call_{index}",
+                        name=fn.get("name", ""),
+                        arguments=fn.get("arguments", "") or "{}",
+                    )
+                )
+            if not calls:
+                return
+
+            messages.append(
+                Message(role=Role.ASSISTANT, content=said or "", tool_calls=calls)
+            )
+            for call in calls:
+                result = await asyncio.to_thread(executor.execute, call)
+                messages.append(
+                    Message(
+                        role=Role.TOOL,
+                        content=result.content,
+                        tool_call_id=call.id,
+                    )
+                )
+            if finish and finish != "tool_calls":
+                return
+
+        # Out of turns. Say so rather than going quiet mid-task.
+        yield " I stopped there — that was taking more steps than expected."
 
     return answer
+
+
+def _merge_fragments(accumulated: dict, fragments: list) -> None:
+    """Reassemble incremental OpenAI tool_call deltas keyed by ``index``."""
+    for frag in fragments:
+        idx = frag.get("index", 0)
+        entry = accumulated.setdefault(
+            idx,
+            {
+                "id": frag.get("id", ""),
+                "type": "function",
+                "function": {"name": "", "arguments": ""},
+            },
+        )
+        if frag.get("id"):
+            entry["id"] = frag["id"]
+        fn = frag.get("function") or {}
+        if fn.get("name"):
+            entry["function"]["name"] += fn["name"]
+        if fn.get("arguments"):
+            entry["function"]["arguments"] += fn["arguments"]
 
 
 def _make_synthesizer(app_state: Any, voice_id: str, speed: float):
