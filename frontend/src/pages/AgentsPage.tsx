@@ -28,6 +28,7 @@ import {
   fetchRecommendedModel,
   sendblueVerify,
   sendblueRegisterWebhook,
+  sendblueWebhookUrl,
   sendblueTest,
   sendblueHealth,
 } from '../lib/api';
@@ -2406,7 +2407,7 @@ function SendBlueWebhookStep({
     if (!webhookUrl.trim()) return;
     setWebhookStatus('registering');
     try {
-      const url = webhookUrl.trim().replace(/\/+$/, '') + '/v1/channels/sendblue/webhook';
+      const url = sendblueWebhookUrl(webhookUrl);
       await sendblueRegisterWebhook(apiKey, apiSecret, url);
       setWebhookStatus('done');
     } catch {
@@ -2600,7 +2601,7 @@ function SendBlueWizard({
       });
       // 2. Try to auto-register webhook (best effort)
       try {
-        const webhookUrl = `${window.location.origin}/webhooks/sendblue`;
+        const webhookUrl = sendblueWebhookUrl(window.location.origin);
         await sendblueRegisterWebhook(apiKey, apiSecret, webhookUrl);
       } catch {
         // Non-fatal — user may need to set up ngrok manually

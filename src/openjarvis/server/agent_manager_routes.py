@@ -413,7 +413,7 @@ def build_tools_list() -> List[Dict[str, Any]]:
                     "name": "browser",
                     "description": (
                         "Web browser automation"
-                        " (navigate, click, type, screenshot, extract)"
+                        " (open, navigate, click, type, screenshot, extract)"
                     ),
                     "category": "browser",
                     "source": "tool",
@@ -490,6 +490,48 @@ def _build_managed_system_prompt(system_prompt: str, app_config: Any) -> str:
         system_prompt_config=getattr(app_config, "system_prompt", None),
     )
     return builder.build()
+
+
+def _approval_gate_for(app_state: Any, bus: Any) -> Any:
+    """Build the risk gate for server-run tool calls, or None if disabled.
+
+    Returns None when ``[approvals] enabled = false``, which restores the old
+    run-everything behaviour for anyone who wants it. Any failure to construct
+    the gate also returns None *and logs loudly*: silently falling back to
+    "no gate" is the safer-looking choice that is actually the dangerous one,
+    so it must be visible in the log rather than inferred from behaviour.
+    """
+    config = getattr(app_state, "config", None)
+    approvals = getattr(config, "approvals", None) if config is not None else None
+    if approvals is not None and not getattr(approvals, "enabled", True):
+        return None
+
+    cached = getattr(app_state, "approval_gate", None)
+    if cached is not None:
+        return cached
+
+    try:
+        from openjarvis.security.approval_gate import ApprovalGate
+
+        auto = ("trivial",)
+        overrides: Dict[str, str] = {}
+        if approvals is not None:
+            auto = tuple(getattr(approvals, "auto_approve_tiers", auto))
+            overrides = dict(getattr(approvals, "tier_overrides", {}) or {})
+        gate = ApprovalGate(bus=bus, overrides=overrides, auto_approve_tiers=auto)
+    except Exception:
+        logger.exception(
+            "Approval gate unavailable — server tool calls are running "
+            "UNGATED. Fix this or set [approvals] enabled = false to make "
+            "the choice explicit."
+        )
+        return None
+
+    try:
+        app_state.approval_gate = gate
+    except Exception:  # pragma: no cover — app_state may be a plain object
+        pass
+    return gate
 
 
 def _sampler_kwargs(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -1243,11 +1285,20 @@ async def _stream_managed_agent(
     from openjarvis.tools._stubs import ToolExecutor
 
     resolved_by_name = resolved_toolkit.by_name
+    # The gate replaces the blanket `confirm_callback=lambda _prompt: True`
+    # that used to sit here. That callback made every risk tier in the
+    # approval store decorative on this path: an agent could run shell_exec
+    # unattended. The gate risk-assesses each call and queues anything
+    # non-trivial instead of running it. `interactive` stays True so tools
+    # flagged requires_confirmation are not rejected outright; the gate, not
+    # the callback, is what actually decides (see ToolExecutor.execute).
     stream_tool_executor = ToolExecutor(
         tools=resolved_toolkit.instances,
         bus=bus,
         interactive=True,
         confirm_callback=lambda _prompt: True,
+        approval_gate=_approval_gate_for(app_state, bus),
+        agent_id=agent_id,
     )
 
     # Forward any per-agent sampler params (repetition_penalty, top_p, …) so

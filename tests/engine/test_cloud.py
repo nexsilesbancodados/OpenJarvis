@@ -167,9 +167,14 @@ class TestOpenAIUnsupportedTemperatureRetry:
         engine = CloudEngine()
         engine._openai_client = fake_client
 
+        # Deliberately a model the name list does not know. gpt-5 is now
+        # recognised as temperature-restricted up front, so it never sends the
+        # parameter and never reaches this retry — which is the better
+        # outcome, but it would stop this test from exercising the fallback.
+        # The fallback still matters for whatever OpenAI ships next.
         result = engine.generate(
             [Message(role=Role.USER, content="Hi")],
-            model="gpt-5",
+            model="gpt-6-unreleased",
             temperature=0.7,
         )
         # The call succeeded via the retry.

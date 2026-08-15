@@ -28,6 +28,11 @@ _AGENT_EVENTS = {
     EventType.TOOL_CALL_END,
     EventType.INFERENCE_START,
     EventType.INFERENCE_END,
+    # Approval activity. Without these the UI has to poll to notice that a
+    # call is waiting on a human, and has no way at all to learn how an
+    # approved action turned out — it could only watch the item disappear.
+    EventType.TOOL_CALL_BLOCKED,
+    EventType.APPROVAL_EXECUTED,
 }
 
 

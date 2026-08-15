@@ -171,12 +171,22 @@ def _is_openai_model(model: str) -> bool:
 
 
 def _is_openai_reasoning_model(model: str) -> bool:
-    """Check if model is an OpenAI reasoning model that restricts temperature."""
+    """Check if model is an OpenAI reasoning model that restricts temperature.
+
+    The whole ``gpt-5`` family is treated as restricted, not just ``-mini``:
+    ``gpt-5-nano`` rejects ``temperature=0.7`` with a 400 exactly as ``gpt-5``
+    does, and both appear in the model picker, so selecting one broke chat
+    outright.
+
+    Guessing wrong in this direction is cheap — the request simply runs at the
+    model's default temperature. Guessing wrong the other way is a hard 400
+    that fails the turn, so unknown ``gpt-5``/``o``-series variants err toward
+    omitting the parameter.
+    """
     m = model.lower()
-    # o1/o3 series and gpt-5-mini (all variants) are reasoning models
-    if m.startswith(("o1", "o3")):
+    if m.startswith(("o1", "o3", "o4")):
         return True
-    return m == "gpt-5-mini" or m.startswith("gpt-5-mini-")
+    return m == "gpt-5" or m.startswith("gpt-5-")
 
 
 def _is_unsupported_temperature_error(exc: Exception) -> bool:
@@ -1232,7 +1242,21 @@ class CloudEngine(InferenceEngine):
         }
         if not _is_openai_reasoning_model(model):
             create_kwargs["temperature"] = temperature
-        resp = self._openai_client.chat.completions.create(**create_kwargs)
+        try:
+            resp = self._openai_client.chat.completions.create(**create_kwargs)
+        except Exception as exc:
+            # The name list above cannot keep up with every model OpenAI
+            # ships. The non-streaming path already retries without
+            # temperature on this specific 400; streaming did not, so a new
+            # restricted model failed the turn instead of degrading to the
+            # default temperature.
+            if "temperature" not in create_kwargs or not (
+                _is_unsupported_temperature_error(exc)
+            ):
+                raise
+            logger.debug("retrying stream without temperature for %s", model)
+            create_kwargs.pop("temperature", None)
+            resp = self._openai_client.chat.completions.create(**create_kwargs)
         for chunk in resp:
             delta = chunk.choices[0].delta if chunk.choices else None
             if delta and delta.content:

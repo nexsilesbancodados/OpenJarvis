@@ -8,6 +8,7 @@ import {
   unbindAgentChannel,
   createManagedAgent,
   sendblueRegisterWebhook,
+  sendblueWebhookUrl,
   sendblueHealth,
   getMemoryStats,
   searchMemory,
@@ -1085,7 +1086,7 @@ function SendBlueSection({
     if (!webhookUrl.trim()) return;
     setWebhookStatus('registering');
     try {
-      const url = webhookUrl.trim().replace(/\/+$/, '') + '/v1/channels/sendblue/webhook';
+      const url = sendblueWebhookUrl(webhookUrl);
       await sendblueRegisterWebhook(apiKey.trim(), apiSecret.trim(), url);
       setWebhookStatus('done');
     } catch {
@@ -1270,7 +1271,7 @@ function SendBlueSection({
       // If not, try a best-effort registration with the provided URL.
       if (webhookUrl.trim() && webhookStatus !== 'done') {
         try {
-          const url = webhookUrl.trim().replace(/\/+$/, '') + '/v1/channels/sendblue/webhook';
+          const url = sendblueWebhookUrl(webhookUrl);
           await sendblueRegisterWebhook(apiKey.trim(), apiSecret.trim(), url);
         } catch { /* */ }
       }

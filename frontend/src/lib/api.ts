@@ -569,6 +569,19 @@ export async function unbindAgentChannel(
 
 // -- SendBlue auto-setup helpers ------------------------------------------
 
+// Inbound SendBlue callbacks are served by POST /webhooks/sendblue — the
+// webhook router mounts under the "/webhooks" prefix (webhook_routes.py),
+// not under /v1/channels/. The difference is silent and expensive: a URL
+// under /v1/ misses every router and lands on the SPA catch-all, which
+// answers 200 with index.html, so SendBlue registers a webhook that looks
+// healthy and never delivers a message.
+export const SENDBLUE_WEBHOOK_PATH = '/webhooks/sendblue';
+
+/** Build the public callback URL to hand to SendBlue from a public base URL. */
+export function sendblueWebhookUrl(publicBase: string): string {
+  return publicBase.trim().replace(/\/+$/, '') + SENDBLUE_WEBHOOK_PATH;
+}
+
 export async function sendblueVerify(
   apiKeyId: string,
   apiSecretKey: string,

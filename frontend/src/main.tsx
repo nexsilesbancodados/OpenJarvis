@@ -1,8 +1,8 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router';
-import { ErrorBoundary } from './components/ErrorBoundary';
 import App from './App';
+import { Toaster } from './components/ui/sonner';
 import { initApiBase } from './lib/api';
 import { initAnalytics } from './lib/analytics';
 import './index.css';
@@ -34,11 +34,13 @@ initApiBase().finally(() => {
 
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
-      <ErrorBoundary>
-        <BrowserRouter>
-          <App />
-        </BrowserRouter>
-      </ErrorBoundary>
+      <BrowserRouter>
+        <App />
+        {/* Fifteen toast() calls across the app were silent because nothing
+            ever rendered this — including the error paths in InputArea and
+            AgentsPage, so failures gave the user no feedback at all. */}
+        <Toaster position="bottom-right" closeButton richColors />
+      </BrowserRouter>
     </StrictMode>,
   );
 });

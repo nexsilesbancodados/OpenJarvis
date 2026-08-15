@@ -7,6 +7,16 @@ export interface AgentEvent {
   data: Record<string, unknown>;
 }
 
+/**
+ * Subscribe to every agent's events instead of one agent's.
+ *
+ * `undefined` still means "not ready yet, do not connect", which is what the
+ * existing callers rely on while an agent id loads. Global subscribers — the
+ * approval bell, for instance — are not scoped to an agent at all and need a
+ * way to say so explicitly.
+ */
+export const ALL_AGENTS = '*';
+
 function buildWsUrl(agentId?: string): string {
   const base = getBase();
   let origin: string;
@@ -17,7 +27,7 @@ function buildWsUrl(agentId?: string): string {
     origin = `${loc.protocol === 'https:' ? 'wss:' : 'ws:'}//${loc.host}`;
   }
   const path = '/v1/agents/events';
-  return agentId
+  return agentId && agentId !== ALL_AGENTS
     ? `${origin}${path}?agent_id=${encodeURIComponent(agentId)}`
     : `${origin}${path}`;
 }

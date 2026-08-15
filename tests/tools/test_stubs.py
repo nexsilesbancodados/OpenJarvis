@@ -37,6 +37,31 @@ class _EchoTool(BaseTool):
         )
 
 
+class _NoRequiredTool(BaseTool):
+    """Tool whose every argument is optional."""
+
+    tool_id = "noreq"
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="noreq",
+            description="Echoes input back; nothing is required.",
+            parameters={
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+            },
+            category="testing",
+        )
+
+    def execute(self, **params) -> ToolResult:
+        return ToolResult(
+            tool_name="noreq",
+            content=params.get("text", ""),
+            success=True,
+        )
+
+
 class _ErrorTool(BaseTool):
     """Tool that always raises."""
 
@@ -135,8 +160,25 @@ class TestToolExecutor:
         assert "Invalid arguments JSON" in result.content
 
     def test_execute_empty_arguments(self):
+        """An empty arguments string parses to {} rather than failing as JSON.
+
+        ``_EchoTool`` declares ``text`` required, so {} is then rejected by
+        schema validation — the point here is *which* error we get. "Invalid
+        arguments JSON" would mean the empty string never parsed; the missing
+        -argument message proves it parsed to an empty dict and reached the
+        schema check.
+        """
         executor = ToolExecutor([_EchoTool()])
         call = ToolCall(id="1", name="echo", arguments="")
+        result = executor.execute(call)
+        assert result.success is False
+        assert "Invalid arguments JSON" not in result.content
+        assert "missing required argument(s): text" in result.content
+
+    def test_execute_omits_optional_arguments(self):
+        """A tool whose schema requires nothing dispatches on empty arguments."""
+        executor = ToolExecutor([_NoRequiredTool()])
+        call = ToolCall(id="1", name="noreq", arguments="")
         result = executor.execute(call)
         assert result.success is True
         assert result.content == ""

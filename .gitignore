@@ -130,3 +130,12 @@ learning.db
 minion_logs/
 *.oj-debug.json
 oj-debug.*.json
+
+# Local connection secrets entered through the ORION setup document
+CREDENCIAIS_CONEXOES.txt
+# Any further credential intake file, so a new one is never a new leak.
+CREDENCIAIS_*.txt
+
+# A stray Python installation lands here when an installer is run from the
+# repository root. 136 MB of binaries that must never reach a commit.
+/Python/

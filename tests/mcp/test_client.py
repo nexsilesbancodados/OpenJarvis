@@ -102,10 +102,18 @@ class TestMCPClient:
         assert id2 > id1
 
     def test_call_tool_with_no_arguments(self, client):
-        """Calling a tool with no arguments passes empty dict."""
+        """Omitting ``arguments`` sends an empty dict, not a missing field.
+
+        ``think`` declares ``thought`` required, so the server answers with a
+        validation error rather than running — which is the assertion that
+        actually proves the empty dict arrived. A malformed or absent
+        ``arguments`` field would fail differently, before reaching the tool's
+        schema.
+        """
         result = client.call_tool("think")
-        # Think tool echoes empty thought
-        assert result["isError"] is False
+        assert result["isError"] is True
+        text = "".join(part.get("text", "") for part in result.get("content", []))
+        assert "missing required argument(s): thought" in text
 
     def test_shared_client_serializes_transport_round_trips(self):
         """Concurrent agents cannot consume one another's MCP responses."""

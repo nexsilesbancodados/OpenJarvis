@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Tuple
+from urllib.parse import urlparse
 
 from openjarvis.core.config import JarvisConfig
 from openjarvis.core.registry import EngineRegistry
@@ -29,6 +30,38 @@ _HOST_MAP: Dict[str, str | None] = {
     "litellm": None,
     "gemma_cpp": None,
 }
+
+
+_LOOPBACK = frozenset({"localhost", "127.0.0.1", "0.0.0.0", "::1", ""})
+
+
+def _points_at_own_server(key: str, config: JarvisConfig) -> bool:
+    """True when an engine is configured at the address this server binds.
+
+    ``uzu`` defaults to ``http://localhost:8000`` and ``[server] port``
+    defaults to ``8000``, so running ``jarvis serve`` on the default port made
+    discovery probe the Jarvis server itself. The server answers ``/v1/models``
+    like any OpenAI-compatible engine, so the probe passed, uzu was reported
+    healthy, and inference was routed back into the process that issued it —
+    surfacing as ``HTTP 405`` rather than anything that names the cause.
+
+    Nothing useful can ever live behind such an entry: it is either this
+    server, or a port conflict that would stop it from starting.
+    """
+    attr = _HOST_MAP.get(key)
+    if not attr:
+        return False
+    host = str(getattr(config.engine, attr, "") or "")
+    if not host:
+        return False
+    try:
+        parsed = urlparse(host if "//" in host else f"//{host}", scheme="http")
+    except ValueError:
+        return False
+    if parsed.port != config.server.port:
+        return False
+    # A loopback engine and a loopback server on one port are the same socket.
+    return (parsed.hostname or "") in _LOOPBACK and (config.server.host in _LOOPBACK)
 
 
 def _make_engine(key: str, config: JarvisConfig) -> InferenceEngine:
@@ -123,6 +156,11 @@ def discover_engines(config: JarvisConfig) -> List[Tuple[str, InferenceEngine]]:
     keys = list(EngineRegistry.keys())
 
     def _probe(key: str) -> Tuple[str, InferenceEngine] | None:
+        if _points_at_own_server(key, config):
+            logger.debug(
+                "Engine %r skipped: configured at this server's own address", key
+            )
+            return None
         try:
             engine = _make_engine(key, config)
             if engine.health():
@@ -193,6 +231,15 @@ def get_engine(
 
     for key in keys_to_try:
         if not EngineRegistry.contains(key):
+            continue
+        if _points_at_own_server(key, config):
+            logger.warning(
+                "Engine %r is configured at %s, the same address this server "
+                "binds — skipping it. Point it elsewhere or change "
+                "[server] port.",
+                key,
+                getattr(config.engine, _HOST_MAP.get(key) or "", ""),
+            )
             continue
         try:
             engine = _make_engine(key, config)
