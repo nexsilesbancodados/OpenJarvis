@@ -64,6 +64,14 @@ DEFAULT_TIERS: Dict[str, str] = {
     "browser_axtree": TIER_TRIVIAL,
     # Opening a visible browser window is an observable external action.
     "browser_open": TIER_LOW,
+    # Desktop actions the user can see and undo by closing a window. They are
+    # observable, so not trivial; they destroy nothing, so not medium. Left in
+    # the unknown-tool fallback they would land on `high` (all three set
+    # requires_confirmation) and put an approval prompt in front of "open
+    # Chrome" — the friction that makes people switch the gate off.
+    "open_app": TIER_LOW,
+    "open_file": TIER_LOW,
+    "focus_window": TIER_TRIVIAL,
     "browser_screenshot": TIER_TRIVIAL,
     # The assistant's own notes. Writing here is not an external act: it is
     # reversible, invisible outside the app, and something a personal
